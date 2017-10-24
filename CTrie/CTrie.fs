@@ -2,7 +2,6 @@ namespace CTrie
 open System.Threading
 
 module FSharp =
-
     let BitmapLength=5
     
     let bitcount (i: uint32) =
@@ -11,6 +10,12 @@ module FSharp =
         i <- (i &&& 0x33333333u) + ((i >>> 2) &&& 0x33333333u)
         (((i + (i >>> 4)) &&& 0x0f0f0f0fu) * 0x01010101u) >>> 24
     
+    let flagpos hc bmp lev =
+        let index = (hc >>> lev) &&& 0x1f
+        let flag = 1u <<< index
+        let pos = bitcount (bmp &&& (flag - 1u))
+        (flag, pos)
+
     type SNode<'k,'v> = {key: 'k; value: 'v}
 
     type TNode<'k,'v> = {sn: SNode<'k,'v>}
@@ -37,13 +42,39 @@ module FSharp =
         Restart
         | Result of 'v option
 
-    let flagpos hc bmp lev =
-        let index = (hc >>> lev*BitmapLength) &&& 0x1f
-        let flag = 1u <<< index
-        let pos = bitcount (bmp &&& (flag - 1u))
-        (flag, pos)
+    let resurrectINode i =
+        match i.main with
+            | TNode tn -> SNode tn.sn
+            | _ -> INode i
 
-    let rec ilookup i k level parent equals hashCode =
+    let resurrect n =
+        match n with
+            | INode i -> match i.main with
+                            | TNode tn -> SNode tn.sn
+                            | _ -> INode i
+            | SNode _ -> n
+
+    let toContracted cn lev =
+        if lev > 0 && cn.array.Length = 1 then
+            match cn.array.[0] with
+                | SNode sn -> TNode { sn = sn }
+                | _ -> CNode cn
+        else CNode cn
+
+    let toCompressed cn lev =
+        let ncn = {bitmap=cn.bitmap; array=Array.map resurrect cn.array}
+        toContracted ncn lev
+
+    let clean i lev =
+        match i with
+            | Some node -> 
+                let m = Volatile.Read (ref node.main)
+                match m with
+                    | CNode cn -> ignore(Interlocked.CompareExchange(ref node.main, m, toCompressed cn lev))
+                    | _ -> ()
+            | None -> ()
+
+    let rec ilookup equals hashCode i k level parent =
         match Volatile.Read (ref i.main) with
             | CNode cn -> 
                 let flag, pos = flagpos (hashCode k) cn.bitmap level
@@ -51,18 +82,20 @@ module FSharp =
                     then Result None
                 else
                     match cn.array.[int32 pos] with
-                        | INode sin -> ilookup sin k (level + BitmapLength) (Some i) equals hashCode
+                        | INode sin -> ilookup equals hashCode sin k (level + BitmapLength) (Some i)
                         | SNode sn -> if equals sn.key k then Result (Some sn.value) else Result None
 
-            | TNode tn -> Restart
-            | LNode ln -> Result (List.tryFind (fst >> (equals k)) ln |> (Option.bind (snd >> Some)))
+            | TNode _ -> clean parent level; Restart
+            | LNode ln -> Result (List.tryFind (fst >> equals k) ln |> Option.bind (snd >> Some))
 
-    let rec lookup (trie: CTrie<'k,'v>) k equals hashCode =
+    let rec lookup' equals hashCode trie k =
         let r = Volatile.Read (ref trie.root)
-        let result = ilookup r k 0 None equals hashCode
+        let result = ilookup equals hashCode r k 0 None
         match result with
-            | Restart -> lookup trie k equals hashCode
+            | Restart -> lookup' equals hashCode trie k
             | Result r -> r
+            
+    let lookup trie k = lookup' (=) hash trie k
 
 type CTrie() = 
     member this.X = "F#"
