@@ -15,8 +15,11 @@ module FSharp =
         let flag = 1u <<< index
         let pos = bitcount (bmp &&& (flag - 1u))
         (flag, pos)
+    
+    let flagUnset i bmp =
+        i &&& bmp = 0u
 
-    type SNode<'k,'v> = {key: 'k; value: 'v}
+    type SNode<'k,'v> = ('k * 'v)
 
     type TNode<'k,'v> = {sn: SNode<'k,'v>}
 
@@ -36,6 +39,7 @@ module FSharp =
     type CTrie<'k,'v> = {
         root: INode<'k,'v>
         readonly: bool
+        gen: obj
     }
 
     type Result<'v> =
@@ -83,7 +87,7 @@ module FSharp =
                 else
                     match cn.array.[int32 pos] with
                         | INode sin -> ilookup equals hashCode sin k (level + BitmapLength) (Some i)
-                        | SNode sn -> if equals sn.key k then Result (Some sn.value) else Result None
+                        | SNode sn -> if equals (fst sn) k then Result (Some (snd sn)) else Result None
 
             | TNode _ -> clean parent level; Restart
             | LNode ln -> Result (List.tryFind (fst >> equals k) ln |> Option.bind (snd >> Some))
@@ -96,6 +100,61 @@ module FSharp =
             | Result r -> r
             
     let lookup trie k = lookup' (=) hash trie k
+
+    let CAS<'t when 't: not struct> (loc: 't ref) x y =
+        LanguagePrimitives.PhysicalEquality x (Interlocked.CompareExchange(loc,x,y))
+
+    let rec createCNode hashcode a b lev gen =
+        let array = Array.zeroCreate 32
+        let aflag, apos = flagpos (hashcode (fst a)) 0u lev
+        let bitmap, bpos = flagpos (hashcode (fst b)) aflag lev
+        if apos = bpos then
+            if lev > 32 then
+                let inode = INode { main=LNode [a;b]; gen=gen }
+                Array.set array (int32 apos) inode
+            else
+                let inode = INode { main=createCNode hashcode a b (lev+BitmapLength) gen; gen=gen }
+                Array.set array (int32 apos) inode
+        else
+            Array.set array (int32 apos) (SNode a)
+            Array.set array (int32 bpos) (SNode b)
+        CNode { array=array; bitmap=bitmap }
+
+    let updateCNode cn pos node =
+        let array = Array.copy cn.array
+        Array.set array (int32 pos) node
+        CNode { bitmap=cn.bitmap; array=array; }
+
+    let rec iinsert equals hashCode i k v lev parent gen =
+        let n = Volatile.Read (ref i.main)
+        match n with
+            | CNode cn ->
+                let flag, pos = flagpos (hashCode k) cn.bitmap lev
+                if flagUnset flag cn.bitmap then
+                    let narr = Array.copy cn.array
+                    Array.set narr (int32 pos) (SNode (k, v))
+                    CAS (ref i.main) n (CNode {array=narr; bitmap=cn.bitmap|||flag})
+                else
+                    match cn.array.[int32 pos] with
+                        | INode sin -> iinsert equals hashCode i k v (lev + BitmapLength) (Some i) gen
+                        | SNode sn ->
+                            if not(equals k (fst sn)) then
+                                let nin = INode { main=createCNode hashCode sn (k, v) (lev + BitmapLength) gen; gen=gen }
+                                let ncn = updateCNode cn pos nin
+                                CAS (ref i.main) n ncn
+                            else
+                                let ncn = updateCNode cn pos (SNode (k, v))
+                                CAS (ref i.main) n ncn
+            | TNode tn -> clean parent (lev - BitmapLength); false
+            | LNode ln -> CAS (ref i.main) n (LNode ((k, v) :: ln))
+
+    let rec insert' equals hashCode trie k v =
+        let r = Volatile.Read (ref trie.root)
+        match iinsert equals hashCode r k v 0 None trie.gen with
+            | true -> true
+            | false -> insert' equals hashCode trie k v
+
+    let insert trie k v = insert' (=) hash trie k v
 
 type CTrie() = 
     member this.X = "F#"
