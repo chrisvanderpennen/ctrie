@@ -136,7 +136,7 @@ module FSharp =
                     CAS (ref i.main) n (CNode {array=narr; bitmap=cn.bitmap|||flag})
                 else
                     match cn.array.[int32 pos] with
-                        | INode sin -> iinsert equals hashCode i k v (lev + BitmapLength) (Some i) gen
+                        | INode _ -> iinsert equals hashCode i k v (lev + BitmapLength) (Some i) gen
                         | SNode sn ->
                             if not(equals k (fst sn)) then
                                 let nin = INode { main=createCNode hashCode sn (k, v) (lev + BitmapLength) gen; gen=gen }
@@ -145,7 +145,7 @@ module FSharp =
                             else
                                 let ncn = updateCNode cn pos (SNode (k, v))
                                 CAS (ref i.main) n ncn
-            | TNode tn -> clean parent (lev - BitmapLength); false
+            | TNode _ -> clean parent (lev - BitmapLength); false
             | LNode ln -> CAS (ref i.main) n (LNode ((k, v) :: ln))
 
     let rec insert' equals hashCode trie k v =
@@ -157,4 +157,4 @@ module FSharp =
     let insert trie k v = insert' (=) hash trie k v
 
 type CTrie() = 
-    member this.X = "F#"
+    class end
