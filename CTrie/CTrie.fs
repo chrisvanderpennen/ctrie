@@ -2,6 +2,7 @@ namespace CTrie
 open System.Threading
 
 module FSharp =
+    [<Literal>] 
     let BitmapLength=5
     
     let bitcount (i: uint32) =
@@ -14,7 +15,7 @@ module FSharp =
         let index = (hc >>> lev) &&& 0x1f
         let flag = 1u <<< index
         let pos = bitcount (bmp &&& (flag - 1u))
-        (flag, pos)
+        struct(flag, pos)
     
     let flagUnset i bmp =
         i &&& bmp = 0u
@@ -81,7 +82,7 @@ module FSharp =
     let rec ilookup equals hashCode i k level parent =
         match Volatile.Read (ref i.main) with
             | CNode cn -> 
-                let flag, pos = flagpos (hashCode k) cn.bitmap level
+                let struct(flag, pos) = flagpos (hashCode k) cn.bitmap level
                 if (cn.bitmap &&& flag) = 0u
                     then Result None
                 else
@@ -106,8 +107,8 @@ module FSharp =
 
     let rec createCNode hashcode a b lev gen =
         let array = Array.zeroCreate 32
-        let aflag, apos = flagpos (hashcode (fst a)) 0u lev
-        let bitmap, bpos = flagpos (hashcode (fst b)) aflag lev
+        let struct(aflag, apos) = flagpos (hashcode (fst a)) 0u lev
+        let struct(bitmap, bpos) = flagpos (hashcode (fst b)) aflag lev
         if apos = bpos then
             if lev > 32 then
                 let inode = INode { main=LNode [a;b]; gen=gen }
@@ -129,7 +130,7 @@ module FSharp =
         let n = Volatile.Read (ref i.main)
         match n with
             | CNode cn ->
-                let flag, pos = flagpos (hashCode k) cn.bitmap lev
+                let struct(flag, pos) = flagpos (hashCode k) cn.bitmap lev
                 if flagUnset flag cn.bitmap then
                     let narr = Array.copy cn.array
                     Array.set narr (int32 pos) (SNode (k, v))
