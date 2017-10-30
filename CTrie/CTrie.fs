@@ -1,37 +1,38 @@
 namespace CTrie
 open System.Threading
 
-module FSharp =
+type internal SNode<'k,'v> = ('k * 'v)
+
+type internal TNode<'k,'v> = {sn: SNode<'k,'v>}
+
+type internal CNode<'k,'v> = {bitmap: int; array: Branch<'k,'v>[]}
+
+and internal INode<'k,'v>(main, generation) =
+    [<VolatileField>]
+    let mutable main: MainNode<'k,'v> = main
+    let generation: obj = generation
+
+    member this.ReadMain () =
+        Volatile.Read &main
+
+    member self.TryUpdate currentMain newMain =
+        LanguagePrimitives.PhysicalEquality 
+            currentMain 
+            (Interlocked.CompareExchange(&main,newMain,currentMain))
+
+and internal MainNode<'k,'v> =
+    CN of CNode<'k,'v>
+    | TN of TNode<'k,'v>
+    | LN of SNode<'k,'v> list
+
+and internal Branch<'k,'v> =
+    IN of INode<'k,'v>
+    | SN of SNode<'k,'v>
+
+module CTrie =
     [<Literal>] 
     let private BitmapLength=5
     
-    type internal SNode<'k,'v> = ('k * 'v)
-
-    type internal TNode<'k,'v> = {sn: SNode<'k,'v>}
-
-    type internal CNode<'k,'v> = {bitmap: int; array: Branch<'k,'v>[]}
-    
-    and internal INode<'k,'v>(main, generation) =
-        let mutable main: MainNode<'k,'v> = main
-        let generation: obj = generation
-
-        member this.ReadMain () =
-            Volatile.Read &main
-
-        member self.TryUpdate currentMain newMain =
-            LanguagePrimitives.PhysicalEquality 
-                currentMain 
-                (Interlocked.CompareExchange(&main,currentMain,newMain))
-    
-    and internal MainNode<'k,'v> =
-        CN of CNode<'k,'v>
-        | TN of TNode<'k,'v>
-        | LN of SNode<'k,'v> list
-    
-    and internal Branch<'k,'v> =
-        IN of INode<'k,'v>
-        | SN of SNode<'k,'v>
-
     type Result<'v> =
         Restart
         | Result of 'v option
@@ -104,7 +105,7 @@ module FSharp =
                     | _ -> ()
             | None -> ()
 
-    let rec private ilookup equals hashCode (inode: INode<'a,'b>) key level parent =
+    let rec internal ilookup equals hashCode (inode: INode<'a,'b>) key level parent =
         match inode.ReadMain () with
             | CN cn -> 
                 let flag, pos = flagpos (hashCode key) cn.bitmap level
@@ -118,7 +119,7 @@ module FSharp =
             | TN _ -> clean parent level; Restart
             | LN ln -> Result (List.tryFind (fst >> equals key) ln |> Option.bind (snd >> Some))
 
-    let rec private iinsert equals hashCode (inode: INode<'a,'b>) key value level parent generation =
+    let rec internal iinsert equals hashCode (inode: INode<'a,'b>) key value level parent generation =
         let n = inode.ReadMain ()
         match n with
             | CN cn ->
@@ -141,7 +142,7 @@ module FSharp =
             | TN _ -> clean parent (level - BitmapLength); false
             | LN ln -> inode.TryUpdate n (LN ((key, value) :: ln))
 
-    let rec private iremove equals hashCode (i: INode<'a,'b>) k lev parent =
+    let rec internal iremove equals hashCode (i: INode<'a,'b>) k lev parent =
         let eq = equals k
         let n = i.ReadMain ()
         match n with
@@ -166,43 +167,49 @@ module FSharp =
                     if i.TryUpdate n (TN {sn=nln.Head}) then Result result else Restart
                 else if i.TryUpdate n (LN nln) then Result result else Restart
 
-    type CTrie<'k,'v>(equals, hashCode, readonly) =
-        let equals = equals
-        let hashCode = hashCode
-        let mutable generation = new obj ()
-        let mutable root: INode<'k,'v> = INode( CN { bitmap=0; array=Array.zeroCreate 32 }, generation )
+open CTrie
+type CTrie<'k,'v>(equals, hashCode, readonly) =
+    let equals = equals
+    let hashCode = hashCode
+    let mutable generation = new obj ()
+    
+    [<VolatileField>]
+    let mutable root: INode<'k,'v> = INode( CN { bitmap=0; array=Array.zeroCreate 32 }, generation )
 
-        member val internal ReadOnly = readonly
-        member internal self.Generation
-            with get() =
-                generation
-        member internal self.ReadRoot () =
-            Volatile.Read &root
+    let readRoot () =
+        Volatile.Read (&root)
 
-    let rec internal lookup' equals hashCode (trie: CTrie<'a,'b>) key =
-        let r = trie.ReadRoot ()
+    let rec lookup' key =
+        let r = readRoot ()
         let result = ilookup equals hashCode r key 0 None
         match result with
-            | Restart -> lookup' equals hashCode trie key
+            | Restart -> lookup' key
             | Result r -> r
             
-    let rec internal  insert' equals hashCode (trie: CTrie<'a,'b>) key value =
-        if trie.ReadOnly then false else
-        let r = trie.ReadRoot ()
-        match iinsert equals hashCode r key value 0 None trie.Generation with
+    let rec insert' key value =
+        if readonly then false else
+        let r = readRoot ()
+        match iinsert equals hashCode r key value 0 None generation with
             | true -> true
-            | false -> insert' equals hashCode trie key value
+            | false -> insert' key value
 
-    let rec internal  remove' equals hashCode (trie: CTrie<'a,'b>) k =
-        if trie.ReadOnly then None else
-        let r = trie.ReadRoot ()
+    let rec remove' k =
+        if readonly then None else
+        let r = readRoot ()
         match iremove equals hashCode r k 0 None with
-            | Restart -> remove' equals hashCode trie k
+            | Restart -> remove' k
             | Result v -> v
 
-    let remove trie key = remove' (=) hash trie key
-    let lookup trie key = lookup' (=) hash trie key
-    let insert trie key value = insert' (=) hash trie key value
+    member val internal ReadOnly = readonly
+    member internal self.Generation
+        with get() =
+            generation
+    member internal self.Root
+        with get() =
+            readRoot ()
 
-type CTrie() = 
-    class end
+    member this.Remove key = remove' key
+    member this.Lookup key = lookup' key
+    member this.Insert key value = insert' key value
+
+    new(equals, hashCode) = CTrie(equals, hashCode, false)

@@ -9,5 +9,4 @@
     <Compile Include="CTrie.fs" />
     <None Include="Script.fsx" />
   </ItemGroup>
-  <Import Project="..\.paket\Paket.Restore.targets" />
 </Project>
