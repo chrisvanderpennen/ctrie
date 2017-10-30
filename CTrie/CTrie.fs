@@ -15,7 +15,7 @@ module FSharp =
         let mutable main: MainNode<'k,'v> = main
         let generation: obj = generation
 
-        member this.Read () =
+        member this.ReadMain () =
             Volatile.Read &main
 
         member self.TryUpdate currentMain newMain =
@@ -26,7 +26,7 @@ module FSharp =
     and internal MainNode<'k,'v> =
         CN of CNode<'k,'v>
         | TN of TNode<'k,'v>
-        | LN of ('k * 'v) list
+        | LN of SNode<'k,'v> list
     
     and internal Branch<'k,'v> =
         IN of INode<'k,'v>
@@ -53,7 +53,7 @@ module FSharp =
 
     let private resurrect n =
         match n with
-            | IN i -> match i.Read () with
+            | IN i -> match i.ReadMain () with
                             | TN tn -> SN tn.sn
                             | _ -> IN i
             | SN _ -> n
@@ -65,19 +65,24 @@ module FSharp =
         if apos = bpos then
             if lev > 32 then
                 let inode = IN (INode (LN [a;b], gen))
-                Array.set array (int32 apos) inode
+                Array.set array apos inode
             else
                 let inode = IN (INode (createCNode hashcode a b (lev+BitmapLength) gen, gen))
-                Array.set array (int32 apos) inode
+                Array.set array apos inode
         else
-            Array.set array (int32 apos) (SN a)
-            Array.set array (int32 bpos) (SN b)
+            Array.set array apos (SN a)
+            Array.set array bpos (SN b)
         CN { array=array; bitmap=bitmap }
 
     let private updateCNode cn pos node =
         let array = Array.copy cn.array
-        Array.set array (int32 pos) node
+        Array.set array pos node
         CN { bitmap=cn.bitmap; array=array; }
+
+    let private removeCNode cn flag pos =
+        let array = Array.copy cn.array
+        Array.set array pos Unchecked.defaultof<Branch<'a,'b>>
+        { bitmap=cn.bitmap &&& ~~~flag; array=array }
 
     let private toContracted cn lev =
         if lev > 0 && cn.array.Length = 1 then
@@ -93,20 +98,20 @@ module FSharp =
     let private clean (inode: INode<'a,'b> option) lev =
         match inode with
             | Some node -> 
-                let m = node.Read ()
+                let m = node.ReadMain ()
                 match m with
                     | CN cn -> ignore(node.TryUpdate m (toCompressed cn lev))
                     | _ -> ()
             | None -> ()
 
     let rec private ilookup equals hashCode (inode: INode<'a,'b>) key level parent =
-        match inode.Read () with
+        match inode.ReadMain () with
             | CN cn -> 
                 let flag, pos = flagpos (hashCode key) cn.bitmap level
                 if (cn.bitmap &&& flag) = 0
                     then Result None
                 else
-                    match cn.array.[int32 pos] with
+                    match cn.array.[pos] with
                         | IN sin -> ilookup equals hashCode sin key (level + BitmapLength) (Some inode)
                         | SN sn -> if equals (fst sn) key then Result (Some (snd sn)) else Result None
 
@@ -114,16 +119,16 @@ module FSharp =
             | LN ln -> Result (List.tryFind (fst >> equals key) ln |> Option.bind (snd >> Some))
 
     let rec private iinsert equals hashCode (inode: INode<'a,'b>) key value level parent generation =
-        let n = inode.Read ()
+        let n = inode.ReadMain ()
         match n with
             | CN cn ->
                 let flag, pos = flagpos (hashCode key) cn.bitmap level
                 if flagUnset flag cn.bitmap then
                     let narr = Array.copy cn.array
-                    Array.set narr (int32 pos) (SN (key, value))
+                    Array.set narr pos (SN (key, value))
                     inode.TryUpdate n (CN {array=narr; bitmap=cn.bitmap|||flag})
                 else
-                    match cn.array.[int32 pos] with
+                    match cn.array.[pos] with
                         | IN _ -> iinsert equals hashCode inode key value (level + BitmapLength) (Some inode) generation
                         | SN sn ->
                             if not(equals key (fst sn)) then
@@ -136,6 +141,31 @@ module FSharp =
             | TN _ -> clean parent (level - BitmapLength); false
             | LN ln -> inode.TryUpdate n (LN ((key, value) :: ln))
 
+    let rec private iremove equals hashCode (i: INode<'a,'b>) k lev parent =
+        let eq = equals k
+        let n = i.ReadMain ()
+        match n with
+            | CN cn ->
+                let flag, pos = flagpos (hashCode k) lev cn.bitmap
+                if (cn.bitmap &&& flag) = 0 then Result None
+                else 
+                    match cn.array.[pos] with
+                        | IN sin -> iremove equals hashCode sin k (lev+BitmapLength) (Some i)
+                        | SN sn ->
+                            if (fst >> eq) sn then
+                                let ncn = removeCNode cn flag pos 
+                                let cntr = toContracted ncn lev
+                                if i.TryUpdate n cntr then Result (Some (snd sn))
+                                else Restart
+                            else Result None
+            | TN tn -> clean parent (lev - BitmapLength); Restart
+            | LN ln ->
+                let nln = List.filter (fst >> eq) ln
+                let result = ln |> (List.tryFind (fst >> eq) >> function | Some x -> Some (snd x) | None -> None)
+                if nln.Length = 1 then
+                    if i.TryUpdate n (TN {sn=nln.Head}) then Result result else Restart
+                else if i.TryUpdate n (LN nln) then Result result else Restart
+
     type CTrie<'k,'v>(equals, hashCode, readonly) =
         let equals = equals
         let hashCode = hashCode
@@ -146,26 +176,33 @@ module FSharp =
         member internal self.Generation
             with get() =
                 generation
-        member internal self.Read () =
+        member internal self.ReadRoot () =
             Volatile.Read &root
 
-    let rec lookup' equals hashCode (trie: CTrie<'a,'b>) key =
-        let r = trie.Read ()
+    let rec internal lookup' equals hashCode (trie: CTrie<'a,'b>) key =
+        let r = trie.ReadRoot ()
         let result = ilookup equals hashCode r key 0 None
         match result with
             | Restart -> lookup' equals hashCode trie key
             | Result r -> r
             
-    let rec insert' equals hashCode (trie: CTrie<'a,'b>) key value =
+    let rec internal  insert' equals hashCode (trie: CTrie<'a,'b>) key value =
         if trie.ReadOnly then false else
-        let r = trie.Read ()
+        let r = trie.ReadRoot ()
         match iinsert equals hashCode r key value 0 None trie.Generation with
             | true -> true
             | false -> insert' equals hashCode trie key value
 
+    let rec internal  remove' equals hashCode (trie: CTrie<'a,'b>) k =
+        if trie.ReadOnly then None else
+        let r = trie.ReadRoot ()
+        match iremove equals hashCode r k 0 None with
+            | Restart -> remove' equals hashCode trie k
+            | Result v -> v
+
+    let remove trie key = remove' (=) hash trie key
     let lookup trie key = lookup' (=) hash trie key
     let insert trie key value = insert' (=) hash trie key value
-
 
 type CTrie() = 
     class end
