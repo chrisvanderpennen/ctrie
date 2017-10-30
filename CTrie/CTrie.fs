@@ -31,25 +31,25 @@ and internal Branch<'k,'v> =
 
 module CTrie =
     [<Literal>] 
-    let private BitmapLength=5
+    let private BitmapLength = 5
     
     type Result<'v> =
         Restart
         | Result of 'v option
 
-    let inline private bitcount (i) =
+    let private bitcount i =
         let mutable i = i
-        i <- ((i >>> 1) &&& 0x55555555)
+        i <- (i >>> 1) &&& 0x55555555
         i <- (i &&& 0x33333333) + ((i >>> 2) &&& 0x33333333)
         (((i + (i >>> 4)) &&& 0x0f0f0f0f) * 0x01010101) >>> 24
     
-    let inline private flagpos hc bmp lev =
+    let private flagpos hc bmp lev =
         let index = (hc >>> lev) &&& 0x1f
         let flag = 1 <<< index
         let pos = bitcount (bmp &&& (flag - 1))
         flag, pos
     
-    let inline private flagUnset i bmp =
+    let private flagUnset i bmp =
         i &&& bmp = 0
 
     let private resurrect n =
@@ -59,49 +59,49 @@ module CTrie =
                             | _ -> IN i
             | SN _ -> n
 
-    let rec private createCNode hashcode a b lev gen =
+    let rec private createCNode hashcode a b level gen =
         let array = Array.zeroCreate 32
-        let aflag, apos = flagpos (hashcode (fst a)) 0 lev
-        let bitmap, bpos = flagpos (hashcode (fst b)) aflag lev
+        let aflag, apos = flagpos (hashcode (fst a)) 0 level
+        let bitmap, bpos = flagpos (hashcode (fst b)) aflag level
         if apos = bpos then
-            if lev > 32 then
+            if level > 32 then
                 let inode = IN (INode (LN [a;b], gen))
                 Array.set array apos inode
             else
-                let inode = IN (INode (createCNode hashcode a b (lev+BitmapLength) gen, gen))
+                let inode = IN (INode (createCNode hashcode a b (level+BitmapLength) gen, gen))
                 Array.set array apos inode
         else
             Array.set array apos (SN a)
             Array.set array bpos (SN b)
         CN { array=array; bitmap=bitmap }
 
-    let private updateCNode cn pos node =
+    let private updateAt cn pos node =
         let array = Array.copy cn.array
         Array.set array pos node
-        CN { bitmap=cn.bitmap; array=array; }
+        CN { bitmap = cn.bitmap; array = array; }
 
-    let private removeCNode cn flag pos =
+    let private removeAt cn flag pos =
         let array = Array.copy cn.array
         Array.set array pos Unchecked.defaultof<Branch<'a,'b>>
-        { bitmap=cn.bitmap &&& ~~~flag; array=array }
+        { bitmap = cn.bitmap &&& ~~~flag; array = array }
 
-    let private toContracted cn lev =
-        if lev > 0 && cn.array.Length = 1 then
-            match cn.array.[0] with
+    let private toContracted cnode level =
+        if level > 0 && cnode.array.Length = 1 then
+            match cnode.array.[0] with
                 | SN sn -> TN { sn = sn }
-                | _ -> CN cn
-        else CN cn
+                | _ -> CN cnode
+        else CN cnode
 
-    let private toCompressed cn lev =
-        let ncn = {bitmap=cn.bitmap; array=Array.map resurrect cn.array}
-        toContracted ncn lev
+    let private toCompressed cn level =
+        let newCNode = { bitmap = cn.bitmap; array = Array.map resurrect cn.array }
+        toContracted newCNode level
 
-    let private clean (inode: INode<'a,'b> option) lev =
+    let private clean (inode: INode<'a,'b> option) level =
         match inode with
             | Some node -> 
                 let m = node.ReadMain ()
                 match m with
-                    | CN cn -> ignore(node.TryUpdate m (toCompressed cn lev))
+                    | CN cn -> ignore(node.TryUpdate m (toCompressed cn level))
                     | _ -> ()
             | None -> ()
 
@@ -134,10 +134,10 @@ module CTrie =
                         | SN sn ->
                             if not(equals key (fst sn)) then
                                 let nin = IN (INode (createCNode hashCode sn (key, value) (level + BitmapLength) generation, generation))
-                                let ncn = updateCNode cn pos nin
+                                let ncn = updateAt cn pos nin
                                 inode.TryUpdate n ncn
                             else
-                                let ncn = updateCNode cn pos (SN (key, value))
+                                let ncn = updateAt cn pos (SN (key, value))
                                 inode.TryUpdate n ncn
             | TN _ -> clean parent (level - BitmapLength); false
             | LN ln -> inode.TryUpdate n (LN ((key, value) :: ln))
@@ -154,12 +154,12 @@ module CTrie =
                         | IN sin -> iremove equals hashCode sin k (lev+BitmapLength) (Some i)
                         | SN sn ->
                             if (fst >> eq) sn then
-                                let ncn = removeCNode cn flag pos 
+                                let ncn = removeAt cn flag pos 
                                 let cntr = toContracted ncn lev
                                 if i.TryUpdate n cntr then Result (Some (snd sn))
                                 else Restart
                             else Result None
-            | TN tn -> clean parent (lev - BitmapLength); Restart
+            | TN _ -> clean parent (lev - BitmapLength); Restart
             | LN ln ->
                 let nln = List.filter (fst >> eq) ln
                 let result = ln |> (List.tryFind (fst >> eq) >> function | Some x -> Some (snd x) | None -> None)
@@ -168,6 +168,7 @@ module CTrie =
                 else if i.TryUpdate n (LN nln) then Result result else Restart
 
 open CTrie
+open System.Collections.Generic
 type CTrie<'k,'v>(equals, hashCode, readonly) =
     let equals = equals
     let hashCode = hashCode
@@ -213,3 +214,4 @@ type CTrie<'k,'v>(equals, hashCode, readonly) =
     member this.Insert key value = insert' key value
 
     new(equals, hashCode) = CTrie(equals, hashCode, false)
+    new(comparer: IEqualityComparer<'k>) = CTrie((fun x y -> comparer.Equals(x,y)), comparer.GetHashCode)
