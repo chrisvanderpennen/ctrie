@@ -9,6 +9,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="pseq.fs" />
     <Compile Include="CTrieTests.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
