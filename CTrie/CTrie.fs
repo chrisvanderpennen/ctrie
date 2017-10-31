@@ -10,12 +10,12 @@ and internal CNode<'k,'v> = {bitmap: int; array: Branch<'k,'v>[]; mutable prev: 
     member this.insertAt flag pos node =
         let arr = Array.zeroCreate (this.array.Length + 1)
         Array.blit this.array 0 arr 0 pos
-        arr.[pos] <- node
+        Array.set arr pos node
         Array.blit this.array pos arr (pos + 1) (this.array.Length - pos)
         {this with bitmap=this.bitmap|||flag; array=arr;}
     member this.updateAt pos node =
         let arr = Array.copy this.array
-        arr.[pos] <- node
+        Array.set arr pos node
         {this with array=arr}
     member this.removeAt flag pos =
         let arr = Array.zeroCreate (this.array.Length - 1)
@@ -78,21 +78,20 @@ module CTrie =
             | SN _ -> n
 
     let rec private createCNode hashcode a b level gen =
-        let mutable array = Array.empty
-        let aflag, apos = flagpos (hashcode (fst a)) 0 level
-        let bitmap, bpos = flagpos (hashcode (fst b)) aflag level
-        if apos = bpos then
-            if level > 32 then
-                let inode = IN {main=LN {list=[a;b]; prev=None}; generation=gen}
-                array <- [| inode |]
-            else
+        if level > 32 then
+            LN {list=[a;b]; prev=None}
+        else
+            let mutable array = Array.empty
+            let aflag, apos = flagpos (hashcode (fst a)) 0 level
+            let bitmap, bpos = flagpos (hashcode (fst b)) aflag level
+            if apos = bpos then
                 let inode = IN {main=createCNode hashcode a b (level+BitmapLength) gen; generation=gen}
                 array <- [| inode |]
-        else if apos > bpos then
-            array <- [| (SN b); (SN a) |]
-        else
-            array <- [| (SN a); (SN b) |]
-        CN { array=array; bitmap=bitmap; prev=None }
+            else if apos > bpos then
+                array <- [| (SN b); (SN a) |]
+            else
+                array <- [| (SN a); (SN b) |]
+            CN { array=array; bitmap=bitmap; prev=None }
 
     let private toContracted cnode level =
         if level > 0 && cnode.array.Length = 1 then
