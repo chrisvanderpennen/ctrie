@@ -82,16 +82,16 @@ module CTrie =
             LN {list=[a;b]; prev=None}
         else
             let mutable array = Array.empty
-            let aflag, apos = flagpos (hashcode (fst a)) 0 level
-            let bitmap, bpos = flagpos (hashcode (fst b)) aflag level
-            if apos = bpos then
+            let aIndex = (hashcode (fst a) >>> level) &&& 0x1f
+            let bIndex = (hashcode (fst b) >>> level) &&& 0x1f
+            if aIndex = bIndex then
                 let inode = IN {main=createCNode hashcode a b (level+BitmapLength) gen; generation=gen}
                 array <- [| inode |]
-            else if apos > bpos then
+            else if aIndex > bIndex then
                 array <- [| (SN b); (SN a) |]
             else
                 array <- [| (SN a); (SN b) |]
-            CN { array=array; bitmap=bitmap; prev=None }
+            CN { array=array; bitmap=(1<<<aIndex)|||(1<<<bIndex); prev=None }
 
     let private toContracted cnode level =
         if level > 0 && cnode.array.Length = 1 then

@@ -28,9 +28,9 @@ let tests =
                 Expect.equal (ctrie.Lookup 1) (Some 2) "Value should be found and be 2"
             }
 
-            test "Inserting 1M ints should work" {
+            ftest "Inserting 1M ints should work" {
                 let ctrie = CTrie((=), hash)
-                Seq.init 100 id |> PSeq.iter (fun x -> ctrie.Insert x x |> ignore)
+                Seq.init 100 id |> Seq.iter (fun x -> ctrie.Insert x x |> ignore)
             }
 
             test "Hash collisions" {
