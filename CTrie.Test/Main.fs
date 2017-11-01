@@ -1,4 +1,4 @@
-﻿namespace CTrieTest
+namespace CTrieTest
 open Expecto
 
 module Main =
