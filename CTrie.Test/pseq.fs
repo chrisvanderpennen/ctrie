@@ -1,3 +1,8 @@
+// ParallelSeq, from FSProjects
+// Licensed under Apache 2.0
+// https://github.com/fsprojects/FSharp.Collections.ParallelSeq/blob/master/src/FSharp.Collections.ParallelSeq/pseq.fs
+// https://github.com/fsprojects/FSharp.Collections.ParallelSeq/blob/master/LICENSE.txt
+
 namespace FSharp.Collections.ParallelSeq
 
 open System
