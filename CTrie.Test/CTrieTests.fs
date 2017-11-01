@@ -18,7 +18,7 @@ let tests =
         testList "Insert" [
             test "Inserting into an empty trie should succeed" {
                 let ctrie = CTrie((=), hash)
-                Expect.isTrue (ctrie.Insert 1 1) "Inserting into an empty trie should succeed"
+                Expect.isTrue (ctrie.Insert 0 0) "Inserting into an empty trie should succeed"
             }
 
             test "Inserting the same value twice should replace the existing value" {
@@ -28,9 +28,19 @@ let tests =
                 Expect.equal (ctrie.Lookup 1) (Some 2) "Value should be found and be 2"
             }
 
-            ftest "Inserting 1M ints should work" {
+            test "Inserting 1M ints should work" {
                 let ctrie = CTrie((=), hash)
-                Seq.init 100 id |> Seq.iter (fun x -> ctrie.Insert x x |> ignore)
+                let ins x = ctrie.Insert x x |> ignore
+                let rem x = ctrie.Remove x
+                
+                let count = 1000000
+
+                PSeq.init count id |> PSeq.iter ins
+                Expect.equal (Seq.length (ctrie.DebugSeq ())) count "didn't iterate enough items"
+                let lookups = PSeq.init count id |> PSeq.map ctrie.Lookup
+                Expect.hasCountOf lookups (uint32 count) Option.isSome "didn't lookup enough items"
+                let removed = PSeq.init count id |> PSeq.map rem |> PSeq.toList
+                Expect.hasCountOf removed (uint32 count) Option.isSome  "didn't remove enough items"
             }
 
             test "Hash collisions" {

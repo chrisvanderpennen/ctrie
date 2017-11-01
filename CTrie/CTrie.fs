@@ -6,7 +6,7 @@ type internal SNode<'k,'v> = ('k * 'v)
 
 type internal TNode<'k,'v> = {sn: SNode<'k,'v>; mutable prev: MainNode<'k,'v> option}
 
-and internal CNode<'k,'v> = {bitmap: int; array: Branch<'k,'v>[]; mutable prev: MainNode<'k,'v> option} with
+and internal CNode<'k,'v> = {bitmap: uint32; array: Branch<'k,'v>[]; mutable prev: MainNode<'k,'v> option} with
     member this.insertAt flag pos node =
         let arr = Array.zeroCreate (this.array.Length + 1)
         Array.blit this.array 0 arr 0 pos
@@ -21,7 +21,7 @@ and internal CNode<'k,'v> = {bitmap: int; array: Branch<'k,'v>[]; mutable prev: 
         let arr = Array.zeroCreate (this.array.Length - 1)
         Array.blit this.array 0 arr 0 pos
         Array.blit this.array (pos+1) arr pos (this.array.Length - pos - 1)
-        {this with bitmap=this.bitmap^^^flag}
+        {this with bitmap=this.bitmap^^^flag; array=arr;}
 
 and internal LNode<'k,'v> = {list: SNode<'k,'v> list; mutable prev: MainNode<'k,'v> option}
 
@@ -57,18 +57,20 @@ module CTrie =
 
     let private bitcount i =
         let mutable i = i
-        i <- (i >>> 1) &&& 0x55555555
-        i <- (i &&& 0x33333333) + ((i >>> 2) &&& 0x33333333)
-        (((i + (i >>> 4)) &&& 0x0f0f0f0f) * 0x01010101) >>> 24
+        i <- i - ((i >>> 1) &&& 0x55555555u)
+        i <- ((i >>> 2) &&& 0x33333333u) + (i &&& 0x33333333u)
+        i <- ((i >>> 4) + i) &&& 0x0f0f0f0fu
+        i <- i * 0x01010101u
+        i >>> 24
     
-    let inline private flagpos hc bmp lev =
-        let index = (hc >>> lev) &&& 0x1f
-        let flag = 1 <<< index
-        let pos = bitcount (bmp &&& (flag - 1))
-        flag, pos
-    
+    let private flagpos hc bmp lev =
+        let index = ((uint32 hc) >>> lev) &&& 0x1fu
+        let flag = 1u <<< int index
+        let pos = bitcount (bmp &&& (flag - 1u))
+        flag, int pos
+
     let private flagUnset i bmp =
-        i &&& bmp = 0
+        i &&& bmp = 0u
 
     let private resurrect n =
         match n with
@@ -91,7 +93,7 @@ module CTrie =
                 array <- [| (SN b); (SN a) |]
             else
                 array <- [| (SN a); (SN b) |]
-            CN { array=array; bitmap=(1<<<aIndex)|||(1<<<bIndex); prev=None }
+            CN { array=array; bitmap=(1u<<<aIndex)|||(1u<<<bIndex); prev=None }
 
     let private toContracted cnode level =
         if level > 0 && cnode.array.Length = 1 then
@@ -116,7 +118,7 @@ module CTrie =
         match inode.ReadMain () with
             | CN cn -> 
                 let flag, pos = flagpos (hashCode key) cn.bitmap level
-                if (cn.bitmap &&& flag) = 0
+                if (cn.bitmap &&& flag) = 0u
                     then Result None
                 else
                     match cn.array.[pos] with
@@ -136,7 +138,7 @@ module CTrie =
                     inode.TryUpdate n (CN ncn)
                 else
                     match cn.array.[pos] with
-                        | IN _ -> iinsert equals hashCode inode key value (level + BitmapLength) (Some inode) generation
+                        | IN sin -> iinsert equals hashCode sin key value (level + BitmapLength) (Some inode) generation
                         | SN sn ->
                             if not(equals key (fst sn)) then
                                 let nin = IN {main=createCNode hashCode sn (key, value) (level + BitmapLength) generation; generation=generation}
@@ -153,8 +155,8 @@ module CTrie =
         let n = i.ReadMain ()
         match n with
             | CN cn ->
-                let flag, pos = flagpos (hashCode k) lev cn.bitmap
-                if (cn.bitmap &&& flag) = 0 then Result None
+                let flag, pos = flagpos (hashCode k) cn.bitmap lev
+                if (cn.bitmap &&& flag) = 0u then Result None
                 else 
                     match cn.array.[pos] with
                         | IN sin -> iremove equals hashCode sin k (lev+BitmapLength) (Some i)
@@ -181,7 +183,7 @@ type CTrie<'k,'v>(equals, hashCode, readonly) =
     let mutable generation = new obj ()
     
     [<VolatileField>]
-    let mutable root: INode<'k,'v> = {main=CN { bitmap=0; array=Array.empty; prev=None }; generation=generation}
+    let mutable root: INode<'k,'v> = {main=CN { bitmap=0u; array=Array.empty; prev=None }; generation=generation}
 
     let readRoot () =
         Volatile.Read (&root)
@@ -218,6 +220,23 @@ type CTrie<'k,'v>(equals, hashCode, readonly) =
     member this.Remove key = remove' key
     member this.Lookup key = lookup' key
     member this.Insert key value = insert' key value
+    member this.DebugWrite () = printfn "%A" root
+    member this.DebugSeq () = 
+        let rec debugCn cn = 
+            seq {
+                for elem in cn.array do
+                    match elem with
+                        | SN sn -> yield sn
+                        | IN inode -> yield! debugMain inode.main
+            }
+        and debugMain mn =
+            seq {
+                match mn with
+                    | CN cn -> yield! debugCn cn
+                    | TN tn -> yield tn.sn
+                    | LN ln -> yield! ln.list
+            }
+        debugMain root.main
 
     new(equals, hashCode) = CTrie(equals, hashCode, false)
     new(comparer: IEqualityComparer<'k>) = CTrie((fun x y -> comparer.Equals(x,y)), comparer.GetHashCode)
