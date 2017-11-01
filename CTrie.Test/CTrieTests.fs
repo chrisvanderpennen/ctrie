@@ -2,6 +2,7 @@ module CTrieTests
 open Expecto
 open CTrie
 open FSharp.Collections.ParallelSeq
+open System.Collections.Concurrent
 
 type ZeroHashCode(i: int)  =
     override x.Equals(other) =
@@ -41,6 +42,20 @@ let tests =
                 Expect.hasCountOf lookups (uint32 count) Option.isSome "didn't lookup enough items"
                 let removed = PSeq.init count id |> PSeq.map rem |> PSeq.toList
                 Expect.hasCountOf removed (uint32 count) Option.isSome  "didn't remove enough items"
+            }
+
+            test "Faster than ConcurrentDictionary" {
+                let count = 1000000
+                let trieInsert () = 
+                    let ctrie = CTrie((=), hash)
+                    let ins x = ctrie.Insert x x |> ignore
+                    PSeq.init count id |> PSeq.iter ins
+                let dictInsert () =
+                    let cdict = ConcurrentDictionary<int, int>()
+                    let cins x = cdict.TryAdd(x,x) |> ignore
+                    PSeq.init count id |> PSeq.iter cins
+
+                Expect.isFasterThan trieInsert dictInsert "trie should be faster"
             }
 
             test "Hash collisions" {
